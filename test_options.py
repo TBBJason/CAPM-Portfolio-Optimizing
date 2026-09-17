@@ -1,5 +1,6 @@
 """Tests for the Black-Scholes option pricing and Greeks."""
 import numpy as np
+import pandas as pd
 import pytest
 
 from options import black_scholes_greeks
@@ -105,3 +106,108 @@ def test_dividend_yield_reduces_call_value():
     no_div = black_scholes_greeks(**REF, option_type="call")["price"]
     with_div = black_scholes_greeks(**REF, option_type="call", q=0.03)["price"]
     assert with_div < no_div
+
+
+def test_fetch_expirations_uses_history_when_fast_price_is_missing(monkeypatch):
+    import options as options_module
+
+    class FakeTicker:
+        def __init__(self, symbol):
+            self.symbol = symbol
+            self.fast_info = {"last_price": None, "lastPrice": None}
+            self.options = ("2026-06-19", "2026-07-17")
+
+        def history(self, period):
+            assert period == "1d"
+            return pd.DataFrame({"Close": [123.45]})
+
+    monkeypatch.setattr(options_module.yf, "Ticker", FakeTicker)
+
+    result = options_module.fetch_expirations("AAPL")
+
+    assert result == {
+        "ticker": "AAPL",
+        "underlying_price": 123.45,
+        "expirations": ["2026-06-19", "2026-07-17"],
+    }
+
+
+def test_years_to_expiry_handles_future_and_expired_dates():
+    import options as options_module
+
+    future = (
+        pd.Timestamp.now(tz=None).normalize() + pd.Timedelta(days=9)
+    ).date().isoformat()
+
+    assert options_module._years_to_expiry(future) == pytest.approx(10 / 365)
+    assert options_module._years_to_expiry("2000-01-01") == 0.0
+
+
+def test_fetch_option_chain_enriches_calls_and_puts(monkeypatch):
+    from types import SimpleNamespace
+    import options as options_module
+
+    calls = pd.DataFrame([{
+        "contractSymbol": "AAA260619C00100000",
+        "strike": 100.0,
+        "lastPrice": 10.0,
+        "bid": 9.8,
+        "ask": 10.2,
+        "volume": np.nan,
+        "openInterest": 120,
+        "impliedVolatility": 0.20,
+        "inTheMoney": True,
+    }])
+    puts = pd.DataFrame([{
+        "contractSymbol": "AAA260619P00100000",
+        "strike": 100.0,
+        "lastPrice": 8.0,
+        "bid": 7.8,
+        "ask": 8.2,
+        "volume": 10,
+        "openInterest": np.nan,
+        "impliedVolatility": 0.25,
+        "inTheMoney": False,
+    }])
+
+    class FakeTicker:
+        def __init__(self, symbol):
+            self.symbol = symbol
+            self.fast_info = {"last_price": 101.0}
+
+        def option_chain(self, expiry):
+            assert expiry == "2026-06-19"
+            return SimpleNamespace(calls=calls, puts=puts)
+
+    monkeypatch.setattr(options_module.yf, "Ticker", FakeTicker)
+    monkeypatch.setattr(options_module, "_years_to_expiry", lambda expiry: 0.5)
+
+    result = options_module.fetch_option_chain(
+        "AAA", "2026-06-19", rf=0.03, q=0.01
+    )
+
+    assert result["underlying_price"] == 101.0
+    assert result["risk_free_rate"] == 0.03
+    assert result["years_to_expiry"] == 0.5
+    assert result["calls"][0]["volume"] is None
+    assert result["puts"][0]["openInterest"] is None
+    assert result["calls"][0]["delta"] > 0
+    assert result["puts"][0]["delta"] < 0
+    for side in ("calls", "puts"):
+        assert {
+            "bs_price", "delta", "gamma", "vega", "theta", "rho"
+        } <= result[side][0].keys()
+
+
+def test_fetch_option_chain_rejects_missing_underlying_price(monkeypatch):
+    import options as options_module
+
+    class FakeTicker:
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+    monkeypatch.setattr(options_module.yf, "Ticker", FakeTicker)
+    monkeypatch.setattr(options_module, "_underlying_price", lambda ticker: None)
+
+    with pytest.raises(ValueError, match="Could not determine underlying price"):
+        options_module.fetch_option_chain("UNKNOWN", "2026-06-19")

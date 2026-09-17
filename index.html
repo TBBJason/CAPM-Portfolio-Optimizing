@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Portfolio Optimizer</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"></script>
     <style>
         :root {
             --color-bg-base: #0f172a;
@@ -221,6 +221,16 @@
             background-color: rgba(16, 185, 129, 0.1);
             border: 1px solid var(--color-success);
             color: #86efac;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            display: none;
+        }
+
+        .warning {
+            background-color: rgba(245, 158, 11, 0.1);
+            border: 1px solid var(--color-warning);
+            color: #fcd34d;
             padding: 12px;
             border-radius: 6px;
             margin-bottom: 15px;
@@ -468,6 +478,7 @@
             <div class="card">
                 <h2>Portfolio Setup</h2>
                 <div class="error" id="errorMsg"></div>
+                <div class="warning" id="warningMsg"></div>
                 <div class="success" id="successMsg"></div>
 
                 <div class="form-group">
@@ -590,13 +601,13 @@
 
         <div id="tab-stockdata" class="tab-content">
             <div class="card full-width">
-                <h2>Stock Technical Data</h2>
+                <h2>Company Fundamentals</h2>
                 <p class="input-hint" style="margin-bottom: 15px;">
-                    Key fundamentals for the stocks in your portfolio (add them in the Optimizer tab).
+                    Key company and valuation metrics for the stocks in your portfolio (add them in the Optimizer tab).
                 </p>
                 <div class="error" id="fundError"></div>
                 <button class="btn-primary" style="max-width: 280px;" onclick="loadFundamentals()" id="loadFundBtn">
-                    📈 Load Stock Data
+                    📈 Load Fundamentals
                 </button>
                 <div id="fundamentalsContainer" style="margin-top: 20px;">
                     <p style="color: #94a3b8; text-align: center; padding: 20px;">
@@ -673,12 +684,14 @@
             input.value = '';
             renderTags();
             clearError();
+            clearWarning();
         }
 
         function removeStock(ticker) {
             const idx = stocks.indexOf(ticker);
             if (idx > -1) stocks.splice(idx, 1);
             renderTags();
+            clearWarning();
         }
 
         function renderTags() {
@@ -692,6 +705,7 @@
             stocks.length = 0;
             renderTags();
             clearError();
+            clearWarning();
         }
 
         function showError(msg) {
@@ -704,6 +718,16 @@
             document.getElementById('errorMsg').style.display = 'none';
         }
 
+        function showWarning(msg) {
+            const el = document.getElementById('warningMsg');
+            el.textContent = msg;
+            el.style.display = 'block';
+        }
+
+        function clearWarning() {
+            document.getElementById('warningMsg').style.display = 'none';
+        }
+
         function showSuccess(msg) {
             const el = document.getElementById('successMsg');
             el.textContent = msg;
@@ -712,11 +736,13 @@
         }
 
         async function optimizePortfolio() {
+            clearWarning();
             if (stocks.length < 2) {
                 showError('Please add at least 2 stocks');
                 return;
             }
 
+            clearError();
             const rf = parseFloat(document.getElementById('riskFreeRate').value) / 100;
             const lookback = parseInt(document.getElementById('lookback').value);
             const btn = document.getElementById('optimizeBtn');
@@ -751,6 +777,9 @@
                 displayFrontier(result.frontier);
                 displayBacktest(result.backtest_values);
 
+                if (result.warning) {
+                    showWarning(result.warning);
+                }
                 showSuccess('Portfolio optimized successfully!');
             } catch (err) {
                 showError('Error: ' + err.message + '. Make sure backend.py is running on port 10000');
