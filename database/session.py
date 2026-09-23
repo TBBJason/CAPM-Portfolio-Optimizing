@@ -16,3 +16,16 @@ engine = create_engine(
     pool_size=3,
     max_overflow=2
 )
+
+
+from sqlalchemy import text
+
+
+from database.session import engine
+
+
+with engine.connect() as connection:
+    result = connection.execute(text("SELECT 1"))
+    print(result.scalar_one())
+
+    
