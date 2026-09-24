@@ -1,23 +1,11 @@
-import yfinance as yf
 import pandas as pd
 import numpy as np
 from portfolio import tangency_weights, tangency_weights_constrained, efficient_frontier
-
+from market_data.yahoo_client import download_daily_prices
 
 # downloading and loading data
 def download_stock_data(tickers, start, end):
-    """Download adjusted close prices, always returning a DataFrame.
-
-    yfinance returns a Series for a single ticker; we normalise to a one-column
-    DataFrame so callers can rely on a consistent shape and on ``.columns``.
-    """
-    if isinstance(tickers, str):
-        tickers = [tickers]
-    data = yf.download(list(tickers), start=start, end=end, auto_adjust=True)
-    close = data['Close']
-    if isinstance(close, pd.Series):
-        close = close.to_frame(name=tickers[0])
-    return close
+    return download_daily_prices(tickers, start, end)
 
 
 def calculate_annualized_return(returns, periods_per_year=252):
