@@ -110,7 +110,7 @@ def _plan_symbol(fetches, start:date, end:date, now: datetime):
             # Respect the failure backoff so we don't hammer a bad range.
             if not _in_failure_backoff(fetches, g_start, g_end, now):
                 needed.append((g_start, g_end))
-                
+
     # --- Recent portion: the latest seven days -----------------------------
     recent_start = max(start, recent_cutoff)
     if recent_start <= end:
@@ -141,3 +141,93 @@ def _merge_ranges(ranges: list[tuple[date, date]]):
         else:
             merged.append((s, e))
     return merged
+
+
+# --- Database Helpers ------------------------------------------------------
+def _load_fetches(session, symbols, start, end, provider, interval):
+    stmt = (
+        select(MarketDataFetch)
+        .where(
+            MarketDataFetch.provider == provider,
+            MarketDataFetch.interval == interval,
+            MarketDataFetch.symbol.in_(symbols),
+            MarketDataFetch.range_start <= end,
+            MarketDataFetch.range_end >= start,
+        )
+    )
+    result: dict[str, list[MarketDataFetch]] = {s: [] for s in symbols}
+    for row in session.scalars(stmt):
+        result.setdefault(row.symbol, []).append(row)
+    return result
+
+def _query_prices(session, symbols, start, end, provider):
+    """Query cached prices and pivot into a wide DataFrame."""
+    stmt = (
+        select(
+            DailyPrice.trade_date,
+            DailyPrice.symbol,
+            DailyPrice.adjusted_close,
+        )
+        .where(
+            DailyPrice.provider == provider,
+            DailyPrice.symbol.in_(symbols),
+            DailyPrice.trade_date >= start,
+            DailyPrice.trade_date <= end,
+        )
+    )
+    rows = session.execute(stmt).all()
+    if not rows:
+        return pd.DataFrame()
+
+    long_df = pd.DataFrame(rows, columns=["trade_date", "symbol", "adjusted_close"])
+    long_df["adjusted_close"] = long_df["adjusted_close"].astype(float)
+    wide = long_df.pivot(index="trade_date", columns="symbol", values="adjusted_close")
+    wide.index = pd.to_datetime(wide.index)
+    wide = wide.sort_index()
+    wide.columns.name = None
+    return wide
+
+
+def _upsert_prices(session, provider, symbol, series: pd.Series):
+    """Upsert a symbol's price series (index=Timestamp, values=adj close)."""
+    records = []
+    for ts, value in series.items():
+        if pd.isna(value):
+            continue
+        records.append(
+            {
+                "provider": provider,
+                "symbol": symbol,
+                "trade_date": _to_date(ts),
+                "adjusted_close": float(value),
+            }
+        )
+    if not records:
+        return 0
+
+    stmt = pg_insert(DailyPrice).values(records)
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_daily_prices_provider_symbol_date",
+        set_={
+            "adjusted_close": stmt.excluded.adjusted_close,
+            "updated_at": datetime.now(timezone.utc),
+        },
+    )
+    session.execute(stmt)
+    return len(records)
+
+
+def _record_fetch(session, provider, interval, symbol, r_start, r_end,
+                  status, rows_received, error_code=None):
+    session.add(
+        MarketDataFetch(
+            provider=provider,
+            interval=interval,
+            symbol=symbol,
+            range_start=r_start,
+            range_end=r_end,
+            status=status,
+            rows_received=rows_received,
+            error_code=error_code,
+        )
+    )
